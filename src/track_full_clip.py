@@ -66,6 +66,12 @@ def parse_args():
     p.add_argument("--coast-frames", type=int, default=8)
     p.add_argument("--hold-seconds", type=float, default=2.0)
     p.add_argument("--size-alpha", type=float, default=0.15)
+    p.add_argument("--track-relax-radius", type=float, default=45.0,
+                   help="Around the predicted position of a target that was MISSED last "
+                        "frame, relax the coverage/erosion validity gate so detection "
+                        "survives at the leading edge of a follow-pan. 0 disables.")
+    p.add_argument("--track-relax-frames", type=int, default=3,
+                   help="Min coverage (MOG2 model age) required inside the relax disc.")
     return p.parse_args()
 
 
@@ -177,6 +183,13 @@ def main():
 
         bw = colorfix.to_bw(f)
         Hc = T @ Hs[idx]
+        # Where do we expect the active target? Only relax detection once it was
+        # MISSED last frame (since > 0): while cleanly tracking (since == 0) the
+        # validity mask is left untouched, so good tracking is provably unchanged.
+        relax_pred = None
+        if (a.track_relax_radius > 0 and active is not None and last_pos is not None
+                and since > 0):
+            relax_pred = last_pos + vel * min(since + 1, a.coast_frames)
         if blur[idx] < blur_thr:
             boxes, cents, embs = [], [], np.zeros((0, emb.dim), np.float32)   # blurred -> no detection
         else:
@@ -184,7 +197,16 @@ def main():
             covered = cv2.warpPerspective(ones, Hc, (cw, ch)) > 0
             coverage[covered] += 1
             coverage[~covered] = 0
+            # Strict gate everywhere; a relaxed disc around the predicted position lets
+            # detection survive at the leading edge of a follow-pan (validity is a
+            # SUPERSET of the strict mask -- it only adds area, never removes it).
             validity = cv2.erode(((coverage >= a.coverage_frames).astype(np.uint8)) * 255, kbase)
+            if relax_pred is not None:
+                relaxed = ((coverage >= a.track_relax_frames).astype(np.uint8)) * 255  # NOT eroded
+                disc = np.zeros((ch, cw), np.uint8)
+                cv2.circle(disc, (int(round(relax_pred[0])), int(round(relax_pred[1]))),
+                           int(a.track_relax_radius), 255, -1)
+                validity = cv2.bitwise_or(validity, cv2.bitwise_and(relaxed, disc))
             boxes, cents = detect(aligned, validity, mog2, k3, min_area, max_area)
             embs = emb.embed_boxes(aligned, boxes) if boxes else np.zeros((0, emb.dim), np.float32)
 
