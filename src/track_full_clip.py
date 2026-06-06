@@ -48,15 +48,17 @@ def parse_args():
     p.add_argument("--var-threshold", type=float, default=50.0)
     p.add_argument("--min-area-px", type=float, default=5.0)
     p.add_argument("--max-area-frac", type=float, default=0.05)
-    p.add_argument("--coverage-frames", type=int, default=20)
+    p.add_argument("--coverage-frames", type=int, default=12)
     p.add_argument("--blur-frac", type=float, default=0.19,
                    help="Skip motion detection on frames whose sharpness < this x median "
                         "(blurred frames give garbage detections; we already detect blur).")
     p.add_argument("--min-inliers", type=int, default=25)
-    p.add_argument("--warmup-views", type=int, default=8)
+    p.add_argument("--warmup-views", type=int, default=4)
     p.add_argument("--bank-size", type=int, default=24)
     p.add_argument("--add-thresh", type=float, default=0.92)
     p.add_argument("--bg-size", type=int, default=120)
+    p.add_argument("--max-identities", type=int, default=6,
+                   help="Cap on distinct target identities spawned over the clip.")
     p.add_argument("--reid-margin", type=float, default=0.10)
     p.add_argument("--strong-margin", type=float, default=0.15)
     p.add_argument("--gate-radius", type=float, default=40.0)
@@ -117,38 +119,46 @@ def main():
         seg_canvas[s] = (T, cw, ch)
 
     emb = DinoEmbedder()
-    memory = TargetMemory(capacity=a.bank_size, add_thresh=a.add_thresh)   # persists across segments
-    background = BackgroundMemory(capacity=a.bg_size)
+    identities = []                 # list of {"id": int, "mem": TargetMemory}; PERMANENT
+    background = BackgroundMemory(capacity=a.bg_size)   # shared negatives
+    next_id = 1
+    active = None                   # index into identities of the active target
     k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     kbase = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
     min_area, max_area = a.min_area_px, a.max_area_frac * w * h
     hold_frames = int(a.hold_seconds * fps)
     ones = np.full((h, w), 255, np.uint8)
     corners = np.float32([[0, 0], [w, 0], [w, h], [0, h]]).reshape(-1, 1, 2)
+    palette = [(0, 0, 255), (0, 200, 0), (255, 128, 0), (255, 0, 255),
+               (0, 215, 255), (128, 0, 255), (255, 255, 0)]
 
-    def disc(e):
-        return memory.score(e) - background.score(e)
+    def best_identity(e):
+        """(index, margin) of the identity whose memory best matches e (vs background)."""
+        if not identities:
+            return -1, -1e9
+        bs, bi = -1e9, -1
+        bgs = background.score(e)
+        for ii, idd in enumerate(identities):
+            m = idd["mem"].score(e) - bgs
+            if m > bs:
+                bs, bi = m, ii
+        return bi, bs
 
     Path(a.output).parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(a.output, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
 
-    # per-segment detection state (re-created on segment change)
     cur_seg = -1
-    mog2 = None
-    coverage = None
-    T = None
+    mog2 = coverage = T = None
     cw = ch = 0
-    # bootstrap (causal ByteTrack) + tracker state
-    locked = False
-    btrack = make_tracker(fps)
-    id_embs = defaultdict(list)
-    id_count = Counter()
-    last_pos = None
-    last_box = None
+    btrack = make_tracker(fps)              # causal, every frame (bootstrap + spawn)
+    bt_embs = defaultdict(list)
+    bt_count = Counter()
+    last_pos = last_box = None
     vel = np.zeros(2)
     since = 10 ** 9
     sm_size = None
-    present = held = reacq = 0
+    present = held = reacq = spawns = 0
+    id_frames = Counter()
 
     cap = cv2.VideoCapture(a.source)
     fa = float(w * h)
@@ -168,8 +178,7 @@ def main():
         bw = colorfix.to_bw(f)
         Hc = T @ Hs[idx]
         if blur[idx] < blur_thr:
-            # too blurred -> no detection (don't even update MOG2); the tracker holds
-            boxes, cents, embs = [], [], np.zeros((0, emb.dim), np.float32)
+            boxes, cents, embs = [], [], np.zeros((0, emb.dim), np.float32)   # blurred -> no detection
         else:
             aligned = cv2.warpPerspective(bw, Hc, (cw, ch))
             covered = cv2.warpPerspective(ones, Hc, (cw, ch)) > 0
@@ -179,19 +188,31 @@ def main():
             boxes, cents = detect(aligned, validity, mog2, k3, min_area, max_area)
             embs = emb.embed_boxes(aligned, boxes) if boxes else np.zeros((0, emb.dim), np.float32)
 
-        target_j, state = -1, None
-        if not locked:
-            for r in btrack.update(detections_from_boxes(boxes, fa)):
-                tid, di = int(r[4]), int(r[7])
-                id_count[tid] += 1
-                if di < len(embs):
-                    id_embs[tid].append(embs[di])
-                    if id_count[tid] >= a.warmup_views:
-                        memory.consolidate(id_embs[tid], capacity=a.bank_size)
-                        locked = True
+        # ByteTrack runs every frame (for bootstrap + spawning persistent novel objects)
+        bt_assign = {}
+        for r in btrack.update(detections_from_boxes(boxes, fa)):
+            tid, di = int(r[4]), int(r[7])
+            bt_count[tid] += 1
+            if di < len(embs):
+                bt_embs[tid].append(embs[di])
+                bt_assign[di] = tid
+
+        prev_active = active
+        target_j, state, match_id = -1, None, None
+
+        if not identities:
+            # BOOTSTRAP: first persistent ByteTrack track -> identity 1
+            for di, tid in bt_assign.items():
+                if bt_count[tid] >= a.warmup_views:
+                    mem = TargetMemory(capacity=a.bank_size, add_thresh=a.add_thresh)
+                    mem.consolidate(bt_embs[tid], capacity=a.bank_size)
+                    identities.append({"id": next_id, "mem": mem})
+                    next_id += 1
+                    target_j, state, match_id = di, "TRACK", 0
+                    break
         else:
-            margins = [disc(e) for e in embs]
-            if last_pos is not None:                       # RULE 1: motion-near
+            # RULE 1 — motion-near on the ACTIVE id
+            if active is not None and last_pos is not None:
                 pred = last_pos + vel * min(since + 1, a.coast_frames)
                 best_d = a.gate_radius
                 for j in range(len(boxes)):
@@ -199,49 +220,78 @@ def main():
                     if d <= best_d:
                         best_d, target_j = d, j
                 if target_j >= 0:
-                    state = "TRACK"
-            if target_j < 0 and boxes:                     # RULE 2: DINOv3 re-acquire
-                g = int(np.argmax(margins))
+                    state, match_id = "TRACK", active
+            # RULE 2 — re-acquire the ACTIVE id by appearance (HOLD-protected)
+            if target_j < 0 and boxes and active is not None:
+                am = [identities[active]["mem"].score(e) - background.score(e) for e in embs]
+                g = int(np.argmax(am))
                 jump = (np.hypot(cents[g][0] - last_pos[0], cents[g][1] - last_pos[1])
                         if last_pos is not None else 1e9)
                 holding = last_pos is not None and since <= hold_frames
                 if holding:
-                    # actively holding a stopped target -> only resume NEARBY (a stopped
-                    # target reappears near where it stopped; blocks the f515 far jump)
-                    accept = jump <= a.max_jump and margins[g] >= a.reid_margin
+                    accept = jump <= a.max_jump and am[g] >= a.reid_margin   # near-only (f515 fix)
                 else:
-                    # lost / new segment (last_pos reset) -> far re-acq needs strong margin.
-                    # This is the cross-segment path that CONTINUES the id across the zoom.
-                    need = a.strong_margin if jump > a.max_jump else a.reid_margin
-                    accept = margins[g] >= need
+                    accept = am[g] >= (a.strong_margin if jump > a.max_jump else a.reid_margin)
                 if accept:
-                    target_j, state = g, "REACQ"
+                    target_j, state, match_id = g, "REACQ", active
+            # RULE 3 — re-acquire ANY existing id (global best) -> return-of-id1 path
+            if target_j < 0 and boxes:
+                bj, bii, bm = -1, -1, -1e9
+                for j in range(len(boxes)):
+                    ii, m = best_identity(embs[j])
+                    if m > bm:
+                        bm, bj, bii = m, j, ii
+                if bii >= 0 and bm >= a.reid_margin:    # loosened so id1 re-catches across the zoom
+                    target_j, state, match_id = bj, "REACQ", bii
+            # RULE 4 — spawn a NEW id for a persistent, NOVEL object (e.g. 754)
+            if target_j < 0 and len(identities) < a.max_identities:
+                for j in range(len(boxes)):
+                    tid = bt_assign.get(j)
+                    if tid is None or bt_count[tid] < a.warmup_views:
+                        continue
+                    _, m = best_identity(embs[j])
+                    if m < a.reid_margin:                       # matches no existing id
+                        mem = TargetMemory(capacity=a.bank_size, add_thresh=a.add_thresh)
+                        mem.consolidate(bt_embs[tid], capacity=a.bank_size)
+                        identities.append({"id": next_id, "mem": mem})
+                        next_id += 1
+                        spawns += 1
+                        target_j, state, match_id = j, "NEW", len(identities) - 1
+                        break
 
-        if target_j >= 0:
+        # ---- commit / hold ----
+        cur_id = None
+        cbox = None
+        if target_j >= 0 and match_id is not None:
             c = np.array(cents[target_j])
-            vel = (0.6 * vel + 0.4 * (c - last_pos)) if (state == "TRACK" and last_pos is not None) \
-                else np.zeros(2)
+            vel = (0.6 * vel + 0.4 * (c - last_pos)) if (match_id == active and state == "TRACK"
+                                                         and last_pos is not None) else np.zeros(2)
             if state == "REACQ":
                 reacq += 1
+            if match_id != active:
+                sm_size = None                                 # id switch -> reset box-size filter
+            active = match_id
             last_pos, last_box, since = c, boxes[target_j], 0
-            memory.update(embs[target_j])
+            identities[active]["mem"].update(embs[target_j])
             for j in range(len(boxes)):
                 if j != target_j:
                     background.add(embs[j])
             present += 1
+            cur_id = identities[active]["id"]
+            id_frames[cur_id] += 1
             cbox = boxes[target_j]
-        elif locked and last_pos is not None and since <= hold_frames:
+        elif active is not None and last_pos is not None and since <= hold_frames:
             since += 1
             bw_, bh_ = last_box[2] - last_box[0], last_box[3] - last_box[1]
             cbox = [last_pos[0] - bw_ / 2, last_pos[1] - bh_ / 2,
                     last_pos[0] + bw_ / 2, last_pos[1] + bh_ / 2]
             state = "HOLD"
             held += 1
+            cur_id = identities[active]["id"]
         else:
             since += 1
-            cbox = None
 
-        # ---- draw on the raw colour frame (box mapped canvas -> raw via inv Hc) ----
+        # ---- draw on the raw colour frame ----
         if cbox is not None:
             cxc, cyc = (cbox[0] + cbox[2]) / 2.0, (cbox[1] + cbox[3]) / 2.0
             meas = np.array([cbox[2] - cbox[0], cbox[3] - cbox[1]], float)
@@ -253,13 +303,11 @@ def main():
                 np.linalg.inv(Hc)).reshape(-1, 2)
             x1, y1 = int(quad[:, 0].min()), int(quad[:, 1].min())
             x2, y2 = int(quad[:, 0].max()), int(quad[:, 1].max())
-            col = (0, 0, 255) if state == "REACQ" else ((0, 200, 0) if state == "TRACK" else (0, 165, 255))
+            col = palette[cur_id % len(palette)]
             cv2.rectangle(f, (x1, y1), (x2, y2), col, 2)
-            cv2.putText(f, f"id1 {state}", (x1, max(0, y1 - 6)),
+            cv2.putText(f, f"id{cur_id} {state}", (x1, max(0, y1 - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
-        else:
-            sm_size = None
-        hud = state or ("locking" if not locked else "searching")
+        hud = (f"id{cur_id} {state}" if cur_id is not None else "searching")
         cv2.putText(f, f"f{idx} seg{s} {hud}", (6, 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         writer.write(f)
@@ -267,8 +315,11 @@ def main():
     cap.release()
     writer.release()
     n = len(Hs)
-    print(f"frames {n} | segments {len(seg_canvas)} | tracked {present} ({100*present//max(n,1)}%) | "
-          f"held {held} | cross-segment re-acquisitions {reacq} | memory {len(memory)} views")
+    shown = sum(id_frames.values()) + held
+    print(f"frames {n} | segments {len(seg_canvas)} | identities {len(identities)} "
+          f"(spawns {spawns}) | shown {shown} ({100*shown//max(n,1)}%) | re-acq {reacq}")
+    for k in sorted(id_frames):
+        print(f"  id{k}: tracked {id_frames[k]} frames")
     print(f"Output: {a.output}")
 
 
