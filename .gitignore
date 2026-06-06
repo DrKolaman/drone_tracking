@@ -221,3 +221,9 @@ __marimo__/
 # (worktrees carry a venv + 100MB model weights — must never be committed)
 .claude/*
 !.claude/agents/
+
+# project artifacts (don't version large media / models / data)
+output/
+data/
+*.mp4
+*.pt
