@@ -42,10 +42,10 @@ Frame-by-frame (1-indexed); the cleanly-trackable segment is ~frames **0–609**
 | 610 – 614 | Camera suddenly drops/moves **down fast**, creating **large motion blur**. |
 | 615 – 646 | Camera **stays in one place** (roughly static). |
 | 647 – 744 | At **frame 647** a **large zoom-in** (~7×), then moves across the map. |
-| 745 – 956 | At **frame 745** it **switches to another (unknown) area** of the map and follows the person. |
-| 957 – 1029 | At **frame 957** it **jumps back** to the earlier area **and the scene colour changes B/W → red** (thermal). Person starts moving at **1010**. |
-| 1030 – 1053 | At **frame 1030** the scene **switches back to B/W**; the person **leaves the frame at 1053**. |
-| 1054 – 1193 | Camera **searches** (moving) **without seeing the person** until 1169; the person **leaves the scene at 1193**. |
+| 745 – 956 | At **frame 745** it **switches to another (unknown) area** of the map and follows a target there **until ~955** (this target looks different from the first-half person). |
+| 957 – 1029 | At **frame 957** it **jumps back** to the earlier area **and the scene colour changes B/W → red** (thermal). The target is roughly static (seen lower in the frame), then **starts moving at 1007**. |
+| 1030 – 1052 | At **frame 1030** the scene **switches back to B/W**; the target **leaves the frame at 1052**. |
+| 1053 – 1190 | Camera **searches** (moving) without the target; it **reappears at 1170** (a different, lower location) and **leaves the frame again at 1190**. |
 
 **Discontinuities that matter for registration/tracking:** the 610–614 blur, the
 **647 zoom** (single-frame scale jump that breaks frame-to-frame homography), the

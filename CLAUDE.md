@@ -7,6 +7,11 @@ See **`docs/REQUIREMENTS.md`** for the full requirements, the source-video conte
 timeline, and the key discontinuities (the 647 zoom, the 745/957 jumps, the
 B/W↔red colour switches).
 
+## Output convention
+**All generated artifacts — videos, mosaics, PNGs, CSVs — go to `output/`.**
+Run scripts with `--output output/<name>` / `--out output` (do not use `out/`).
+`output/`, `out/`, `data/`, `*.mp4`, `*.pt` are gitignored.
+
 ---
 
 ## Scene registration → homography stitching → map
