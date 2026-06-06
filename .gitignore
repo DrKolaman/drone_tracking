@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# project artifacts (don't version large media / models / data)
+output/
+data/
+*.mp4
+*.pt
