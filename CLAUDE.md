@@ -133,6 +133,19 @@ scale + middle-right center) or edge/cross-spectral descriptors (RIFT / phase-co
 - `measure_zoom.py`, `test_scale_warp.py`, `reid_bench.py` — zoom measurement, helpers,
   DINOv3 ReID-backbone benchmark.
 
+### Tests (regression / golden-master)
+`tests/` is a pytest suite that **pins current behaviour so optimisation/refactors stay
+consistent**. RANSAC is seeded (`conftest._determinism` -> `cv2.setRNGSeed(0)`) so results
+are reproducible. Run: `python3 -m pytest tests/ -q` (CPU, ~15s). DINOv3 tests are gated:
+`RUN_DINOV3=1 HF_TOKEN=... python3 -m pytest tests/`.
+- Pure/fast: geometry (`_scale_at`/`_foe`/`fit_canvas`/feather/`characterize_*`), colour
+  filter, registration recovering known warps (similarity has no shear), chain/mosaic.
+- Golden-master (`test_characterization.py`, real clip): blur-skip set == [610,611,612];
+  744->745 jump (inliers ~10) vs 742->743 continuous (~588); chain 300-450 -> 151 frames,
+  550x722 canvas. DINOv3 goldens (`test_dinov3_gpu.py`): zoom-link scale ~0.39, loop-closure
+  to keyframe ~300 (cos ~0.765). **Change a golden only when intentionally altering an
+  algorithm, and say why in the commit.**
+
 ### Environment / running
 - DINOv3 weights are **gated** — run with `HF_TOKEN` set in the shell.
 - GPU: RTX 3050 **4 GB** — DINOv3 fp16; MASt3R fp16@384 on GPU or CPU@512 fallback.
