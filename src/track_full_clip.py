@@ -287,7 +287,7 @@ def main():
         if target_j >= 0 and match_id is not None:
             c = np.array(cents[target_j])
             vel = (0.6 * vel + 0.4 * (c - last_pos)) if (match_id == active and state == "TRACK"
-                                                         and last_pos is not None) else np.zeros(2)
+                                                         and last_pos is not None and since == 0) else np.zeros(2)
             if state == "REACQ":
                 reacq += 1
             if match_id != active:
