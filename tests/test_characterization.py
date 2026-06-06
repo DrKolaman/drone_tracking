@@ -1,45 +1,53 @@
-"""Characterization tests: behaviour invariants of the tracker on data/source.mp4.
+"""Golden-master / regression tests on the real clip.
 
-These pin the behaviours we worked hard for (no false jumps, the f124 dropout
-stays fixed, good coverage, one id) with margin. They are SLOW (run the full
-tracker) and need HF_TOKEN. See test_golden.py for exact-output regression.
+These pin the CURRENT pipeline outputs so a future optimisation or refactor must
+reproduce them. RANSAC is seeded (see conftest._determinism), so the values below
+are reproducible. If you intentionally change an algorithm, update the golden value
+here and note why in the commit.
+
+CPU only (no DINOv3). DINOv3 golden values live in test_dinov3_gpu.py.
 """
-
-import math
-
+import cv2
+import numpy as np
 import pytest
 
-pytestmark = pytest.mark.slow
+from colorfix import to_bw
+from build_map import blur_scores, chain, fit_canvas
+from registration import GlobalMotionEstimator
+from conftest import needs_video
 
 
-def _boxed(rows):
-    return [(int(r["frame"]), float(r["cx"]), float(r["cy"]))
-            for r in rows if r["cx"] != ""]
+@needs_video
+def test_golden_blur_skip_set(read_frames):
+    """Blur-skip on frames 0-646 @ 0.19x median == the motion-blur burst only."""
+    sc = blur_scores([to_bw(f) for f in read_frames(0, 646)])
+    skip = [i for i, s in enumerate(sc) if s < 0.19 * np.median(sc)]
+    assert skip == [610, 611, 612]                      # GOLDEN
 
 
-def test_no_false_jumps(tracker_rows):
-    """Adjacent-frame box centre stays within the motion gate (~40px); the f304
-    far jump was 142px. Band allows the 40px gate + GPU-fp16 run-to-run noise."""
-    bx = [(f, x, y) for f, x, y in _boxed(tracker_rows) if 36 <= f <= 475]
-    worst, prev = 0.0, None
-    for f, x, y in bx:
-        if prev and prev[0] == f - 1:
-            worst = max(worst, math.hypot(x - prev[1], y - prev[2]))
-        prev = (f, x, y)
-    assert worst <= 50.0, f"max adjacent jump {worst:.1f}px (regression toward far jumps)"
+@needs_video
+def test_golden_jump_vs_continuous(read_frames):
+    """744->745 is a jump (inlier collapse); 742->743 is continuous."""
+    f = [to_bw(x) for x in read_frames(742, 745)]       # -> idx 0..3 == frames 742..745
+    est = GlobalMotionEstimator(min_inliers=25)
+
+    def inl(a, b):
+        return est.estimate(cv2.cvtColor(f[a], cv2.COLOR_BGR2GRAY),
+                            cv2.cvtColor(f[b], cv2.COLOR_BGR2GRAY)).n_inliers
+
+    cont, jump = inl(0, 1), inl(2, 3)
+    assert cont > 400 and jump < 25                     # semantic (robust)
+    assert cont == pytest.approx(588, rel=0.15)         # GOLDEN 588
+    assert jump == pytest.approx(10, abs=8)             # GOLDEN 10
 
 
-def test_f124_region_stays_covered(tracker_rows):
-    have = {int(r["frame"]) for r in tracker_rows if r["cx"] != ""}
-    missing = [f for f in range(120, 201) if f not in have]
-    assert missing == [], f"uncovered frames in 120-200: {missing[:10]}"
-
-
-def test_coverage_over_continuous_segment(tracker_rows):
-    seg = [r for r in tracker_rows if 36 <= int(r["frame"]) <= 475]
-    shown = sum(1 for r in seg if r["cx"] != "")
-    assert shown / len(seg) >= 0.68, f"coverage {shown}/{len(seg)}"
-
-
-def test_states_are_known(tracker_rows):
-    assert {r["state"] for r in tracker_rows} <= {"NONE", "TRACK", "HOLD", "REACQ"}
+@needs_video
+@pytest.mark.slow
+def test_golden_chain_canvas(read_frames):
+    """Chaining frames 300-450 -> deterministic kept count + canvas size."""
+    sub = [to_bw(f) for f in read_frames(300, 450)]
+    Hs, kept = chain(sub, 25)
+    h, w = sub[0].shape[:2]
+    _, cw, ch = fit_canvas(Hs, w, h)
+    assert len(kept) == 151                             # GOLDEN (all frames kept)
+    assert abs(cw - 550) <= 3 and abs(ch - 722) <= 3    # GOLDEN 550x722

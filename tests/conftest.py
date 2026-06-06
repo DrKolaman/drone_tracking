@@ -1,51 +1,98 @@
-"""Shared fixtures for the tracker test suite.
+"""Shared fixtures + markers for the map / DINOv3 pipeline tests.
 
-Fast unit tests use synthetic data (no video, no DINOv3). The slow
-characterization + golden tests run the real tracker once (session-scoped) and
-need HF_TOKEN + a GPU; they skip cleanly if HF_TOKEN is unset.
+Most tests are pure/fast (no GPU). DINOv3 tests are gated behind RUN_DINOV3=1
+(they need the gated weights + GPU and are slow).
 """
-
-import csv
 import os
-import subprocess
 import sys
-import tempfile
-from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-sys.path.insert(0, str(SRC))
-VIDEO = "/project/data/source.mp4"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "src"))
+VIDEO = os.path.join(ROOT, "data", "source.mp4")
+
+RUN_DINOV3 = os.environ.get("RUN_DINOV3") == "1"
+needs_dinov3 = pytest.mark.skipif(not RUN_DINOV3, reason="set RUN_DINOV3=1 (GPU + HF_TOKEN) to run")
+needs_video = pytest.mark.skipif(not os.path.exists(VIDEO), reason="data/source.mp4 not present")
 
 
 def pytest_configure(config):
-    config.addinivalue_line(
-        "markers", "slow: runs the full tracker on the video (needs HF_TOKEN + GPU)")
+    config.addinivalue_line("markers", "gpu: needs DINOv3 weights + GPU (RUN_DINOV3=1)")
+    config.addinivalue_line("markers", "slow: slower integration test")
 
 
-@pytest.fixture
-def textured():
-    """Factory: a feature-rich grayscale image (good for goodFeaturesToTrack)."""
-    import cv2
+@pytest.fixture(autouse=True)
+def _determinism():
+    """Seed OpenCV's RANSAC + numpy so registration/map outputs are reproducible.
 
-    def _make(seed=0, h=240, w=320):
+    This is what makes the golden-master tests meaningful: an optimisation that
+    preserves behaviour produces identical results; one that changes it fails.
+    """
+    cv2.setRNGSeed(0)
+    np.random.seed(0)
+    yield
+
+
+@pytest.fixture(scope="session")
+def read_frames():
+    """Factory: sequentially read raw BGR frames [lo, hi] from the clip."""
+    def _read(lo, hi):
+        cap = cv2.VideoCapture(VIDEO)
+        out, i = [], 0
+        while True:
+            ok, f = cap.read()
+            if not ok or i > hi:
+                break
+            if i >= lo:
+                out.append(f)
+            i += 1
+        cap.release()
+        return out
+    return _read
+
+
+@pytest.fixture(scope="session")
+def make_texture():
+    """Factory: a deterministic, corner-rich BGR image (good for LK / ORB)."""
+    def _make(h=320, w=480, seed=0, n=350):
         rng = np.random.default_rng(seed)
-        img = np.full((h, w), 127, np.uint8)
-        for _ in range(80):
-            x, y = int(rng.integers(0, w)), int(rng.integers(0, h))
-            cv2.rectangle(img, (x, y),
-                          (x + int(rng.integers(6, 34)), y + int(rng.integers(6, 34))),
-                          int(rng.integers(0, 255)), -1)
+        img = np.full((h, w, 3), 40, np.uint8)
+        for _ in range(n):
+            c = (int(rng.integers(0, w)), int(rng.integers(0, h)))
+            cv2.circle(img, c, int(rng.integers(3, 16)),
+                       tuple(int(x) for x in rng.integers(60, 255, 3)), -1)
         return img
     return _make
 
 
+@pytest.fixture(scope="session")
+def grab():
+    """Factory: read a specific frame index from the committed clip."""
+    def _grab(i):
+        cap = cv2.VideoCapture(VIDEO)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        ok, f = cap.read()
+        cap.release()
+        assert ok, f"could not read frame {i}"
+        return f
+    return _grab
+
+
+def sim_matrix(scale=1.0, deg=0.0, tx=0.0, ty=0.0):
+    """A 3x3 similarity (scale * rotation + translation)."""
+    th = np.deg2rad(deg)
+    c, s = scale * np.cos(th), scale * np.sin(th)
+    return np.array([[c, -s, tx], [s, c, ty], [0, 0, 1]], np.float64)
+
+
+# --- appended: fixtures for the DINOv3+motion tracker tests (test_target_memory,
+#     test_golden). Additive; uses ROOT/VIDEO defined above. ---
 @pytest.fixture
 def unitvec():
-    """Factory: a deterministic L2-normalised float32 vector (a DINOv3-like embedding)."""
+    """Factory: a deterministic L2-normalised float32 embedding."""
     def _make(seed, dim=384):
         rng = np.random.default_rng(seed)
         v = rng.standard_normal(dim).astype(np.float32)
@@ -55,13 +102,17 @@ def unitvec():
 
 @pytest.fixture(scope="session")
 def tracker_rows():
-    """Run the real tracker once over frames 0-475 and return the per-frame log rows."""
+    """Run the tracker once over frames 0-475; return per-frame log rows (slow, needs HF_TOKEN)."""
+    import csv
+    import subprocess
+    import tempfile
     if not os.environ.get("HF_TOKEN"):
         pytest.skip("HF_TOKEN not set; skipping slow tracker run")
+    src = os.path.join(ROOT, "src")
     out = tempfile.NamedTemporaryFile(suffix=".csv", delete=False).name
-    cmd = [sys.executable, str(SRC / "track_dino_reid.py"), "--source", VIDEO,
+    cmd = [sys.executable, os.path.join(src, "track_dino_reid.py"), "--source", VIDEO,
            "--max-frames", "475", "--log-csv", out, "--output", "/tmp/_chartest.mp4"]
-    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     if proc.returncode != 0:
-        pytest.fail(f"tracker run failed:\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}")
+        pytest.fail(f"tracker run failed:\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}")
     return list(csv.DictReader(open(out)))

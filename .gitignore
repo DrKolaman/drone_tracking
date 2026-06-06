@@ -217,6 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# generated map / analysis artifacts
+out/
+
 # Claude Code local config: track only the project agents, ignore the rest
 # (worktrees carry a venv + 100MB model weights — must never be committed)
 .claude/*

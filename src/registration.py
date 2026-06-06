@@ -46,7 +46,13 @@ class GlobalMotionEstimator:
         lk_levels: int = 3,
         ransac_thresh: float = 3.0,
         min_inliers: int = 25,
+        model: str = "homography",
     ) -> None:
+        # model: "homography" (8-DOF, can shear) or "similarity" (4-DOF: translation
+        # + rotation + uniform scale). For a nadir (straight-down) drone over ~flat
+        # ground the inter-frame motion IS a similarity; using it stops shear from
+        # accumulating into the map so footprints stay 90-degree rectangles.
+        self.model = model
         self.feature_params = dict(
             maxCorners=max_corners,
             qualityLevel=quality_level,
@@ -85,7 +91,12 @@ class GlobalMotionEstimator:
             return MotionResult(_IDENTITY.copy(), 0, n_matches, ok=False)
 
         # Map current -> previous so cumulative product warps current -> reference.
-        H, mask = cv2.findHomography(p_cur, p_prev, cv2.RANSAC, self.ransac_thresh)
+        if self.model == "similarity":
+            M, mask = cv2.estimateAffinePartial2D(p_cur, p_prev, method=cv2.RANSAC,
+                                                  ransacReprojThreshold=self.ransac_thresh)
+            H = np.vstack([M, [0, 0, 1]]) if M is not None else None
+        else:
+            H, mask = cv2.findHomography(p_cur, p_prev, cv2.RANSAC, self.ransac_thresh)
         if H is None:
             return MotionResult(_IDENTITY.copy(), 0, n_matches, ok=False)
 
