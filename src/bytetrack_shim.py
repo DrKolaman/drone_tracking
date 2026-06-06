@@ -43,8 +43,11 @@ def detections_from_boxes(boxes, frame_area: float) -> Detections:
         return Detections(np.zeros((0, 4)), np.zeros((0,)), np.zeros((0,)))
     xyxy = np.asarray(boxes, dtype=np.float32)
     area = (xyxy[:, 2] - xyxy[:, 0]) * (xyxy[:, 3] - xyxy[:, 1])
-    # map area -> [0.5, 0.95]; saturates at 5% of the frame
-    conf = 0.5 + 0.45 * np.clip(area / (0.05 * frame_area), 0.0, 1.0)
+    # MOG2 blobs are all motion-confirmed, so give them solid confidence (a small
+    # aerial target must still clear ByteTrack's new_track_thresh=0.6). Area only
+    # nudges within a high band [0.70, 0.95]; temporal consistency, not size,
+    # decides which track is the real target.
+    conf = 0.70 + 0.25 * np.clip(area / (0.02 * frame_area), 0.0, 1.0)
     cls = np.zeros(len(xyxy), dtype=np.float32)
     return Detections(xyxy, conf, cls)
 
