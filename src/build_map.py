@@ -45,7 +45,7 @@ def blur_scores(frames):
             for f in frames]
 
 
-def chain(frames, min_inliers, blur_frac=0.35):
+def chain(frames, min_inliers, blur_frac=0.19):
     """Homographies frame_i -> anchor via chained LK homographies, SKIPPING blurred
     frames so the motion-blur burst (e.g. 610-614) doesn't inject a skew into the
     chain. A blurred frame is never made the reference and never multiplied in; the

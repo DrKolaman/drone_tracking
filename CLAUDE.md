@@ -64,8 +64,12 @@ scale + middle-right center) or edge/cross-spectral descriptors (RIFT / phase-co
   `GlobalMotionEstimator(model="similarity")` (cv2.estimateAffinePartial2D) fixes it.
 - **Skip motion-blurred frames in the chain.** Blurred frames (the 610-614 burst)
   yield bad transforms that tilt everything after them. Score each frame by
-  variance-of-Laplacian and skip frames below ~0.35x the median (`build_map.chain`),
-  bridging from the last sharp frame to the next sharp one.
+  variance-of-Laplacian and skip frames below `blur_frac` x the median
+  (`build_map.chain`, default `blur_frac=0.19`), bridging from the last sharp frame to
+  the next sharp one. 0.19x skips only the worst burst (610-612); 0.25x also catches
+  the 1148+ tail; 0.35x is over-aggressive (drops moderate frames at 546/775/944).
+  Frames kept but un-registerable (blurry tail) end a segment via the normal
+  registration-failure stop. Profile via `blur_profile.py`.
 - **Link the 647 zoom segment into the map** with the DINOv3 sliding-window matcher
   (`map_with_zoom.py`): slide a window over the last sharp wide frame, DINOv3-match
   each against 647, fit a *similarity* 647->wide from the best window's
@@ -79,6 +83,14 @@ scale + middle-right center) or edge/cross-spectral descriptors (RIFT / phase-co
   and laid out beside it (they share no coordinates). Segment 2 (745-956) auto-stops at
   the next discontinuity (957). If a jumped-to area is a *revisit* of earlier ground,
   loop-closure (DINOv3 global descriptors) would relink it instead of placing it apart.
+- **Loop closure for a jump-BACK (957)** (`loop_closure.py`): 957 revisits Segment 1's
+  ground but in red thermal. Embed Segment-1 keyframes + frame 957 and match (best kf),
+  register, and relink the 957-1029 frames into Segment 1's canvas (not a new segment).
+- **Colour-mode filter is mandatory before matching across 957/1030** (`colorfix.to_bw`):
+  the red frames are the same thermal scene colour-mapped, but `BGR2GRAY` crushes their
+  contrast (variance ~4700 in the red channel -> ~100 in luminance). Convert colour
+  frames to B/W using the highest-variance channel; B/W frames pass through. Apply it at
+  frame read so the whole pipeline sees one modality. (Improved the 957 link 13->18 inliers.)
 - **Cross-segment / cross-FOV links:** register one segment's frame to another's using
   the scale-corrected sliding-window matching above, to tie segments into one map.
 - **Loop closure:** DINOv3 global descriptors (`scene_analysis` causal loop-closure) to
@@ -104,6 +116,8 @@ scale + middle-right center) or edge/cross-spectral descriptors (RIFT / phase-co
 - `build_map.py` — stitched map of a continuous segment (LK similarity + blur-skip + feather blending).
 - `map_with_zoom.py` — map that links the 647 zoom segment in via DINOv3 sliding-window.
 - `map_segments.py` — multi-segment map; a detected jump spawns a new segment placed away.
+- `loop_closure.py` — relink a jump-BACK (957) into Segment 1 via DINOv3 keyframe match.
+- `colorfix.py` — `to_bw`: colour-mode filter (red thermal -> B/W via thermal-carrying channel).
 - `build_map_video.py` — progressive map-build video (accumulate / skip-blur / link-zoom).
 - `registration.py` — `GlobalMotionEstimator` (Shi-Tomasi + LK + RANSAC; `model="homography"|"similarity"`).
 - `detect_track.py` — YOLO + BoT-SORT detection/tracking (the deliverable pipeline).
