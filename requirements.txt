@@ -1,0 +1,24 @@
+# Detection & Precision Tracking System — runtime dependencies
+# Python 3.12. Install: pip install -r requirements.txt
+
+# --- core (CPU): stabilization, motion detection, map building ---
+numpy>=1.26
+opencv-python>=4.9
+Pillow>=10.0
+
+# --- deep-learning appearance block: DINOv3 ViT-S/16 ReID embeddings ---
+# Gated weights (facebook/dinov3-vits16-pretrain-lvd1689m): set HF_TOKEN in the env.
+torch>=2.2
+torchvision>=0.17
+transformers>=4.44
+huggingface-hub>=0.24
+
+# --- tracking-by-detection baseline (ByteTrack association shim) ---
+ultralytics>=8.2
+
+# --- tests ---
+pytest>=8.0
+
+# Optional / exploratory only (NOT required to run the tracker or build the map):
+#   MASt3R + DUSt3R are used by src/mast3r_zoom.py and src/measure_zoom.py for the
+#   offline 647-zoom geometry study. Install separately per their repos if needed.

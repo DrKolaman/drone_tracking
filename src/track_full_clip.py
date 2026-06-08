@@ -72,6 +72,9 @@ def parse_args():
                         "survives at the leading edge of a follow-pan. 0 disables.")
     p.add_argument("--track-relax-frames", type=int, default=3,
                    help="Min coverage (MOG2 model age) required inside the relax disc.")
+    p.add_argument("--log-csv", default=None,
+                   help="Write per-frame (frame,seg,id,state,cx,cy) rows for golden-master "
+                        "tests. Logging only -- does not affect tracking.")
     return p.parse_args()
 
 
@@ -152,6 +155,7 @@ def main():
 
     Path(a.output).parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(a.output, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+    log_rows = [] if a.log_csv else None     # per-frame (frame,seg,id,state,cx,cy) golden log
 
     cur_seg = -1
     mog2 = coverage = T = None
@@ -329,6 +333,12 @@ def main():
             cv2.rectangle(f, (x1, y1), (x2, y2), col, 2)
             cv2.putText(f, f"id{cur_id} {state}", (x1, max(0, y1 - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
+        if log_rows is not None:                 # raw-frame box centre (golden log)
+            if cbox is not None:
+                log_rows.append([idx, s, cur_id, state,
+                                 f"{(x1 + x2) / 2.0:.1f}", f"{(y1 + y2) / 2.0:.1f}"])
+            else:
+                log_rows.append([idx, s, "", "searching", "", ""])
         hud = (f"id{cur_id} {state}" if cur_id is not None else "searching")
         cv2.putText(f, f"f{idx} seg{s} {hud}", (6, 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
@@ -336,6 +346,12 @@ def main():
 
     cap.release()
     writer.release()
+    if log_rows is not None:
+        import csv
+        with open(a.log_csv, "w", newline="") as fh:
+            wr = csv.writer(fh)
+            wr.writerow(["frame", "seg", "id", "state", "cx", "cy"])
+            wr.writerows(log_rows)
     n = len(Hs)
     shown = sum(id_frames.values()) + held
     print(f"frames {n} | segments {len(seg_canvas)} | identities {len(identities)} "
