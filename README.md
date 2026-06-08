@@ -98,6 +98,7 @@ tests/     pytest regression / golden-master safety net (see tests/README.md)
 
 | # | Deliverable | Document |
 |---|---|---|
+| ★ | **Submission** (≤6-page distillation of all five) | [`docs/SUBMISSION.md`](docs/SUBMISSION.md) |
 | — | Requirements, video timeline, scope | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) |
 | 1 | System Design | [`docs/deliverable-1-system-design.md`](docs/deliverable-1-system-design.md) |
 | 2 | Deep-Learning Analysis | [`docs/deliverable-2-dl-analysis.md`](docs/deliverable-2-dl-analysis.md) |
