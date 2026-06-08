@@ -1,6 +1,7 @@
 # Detection & Precision Tracking System — Submission
 
-**Repo:** `github.com/DrKolaman/drone_tracking` · **Code:** `src/` · **Demo video:** *(attach link)* · **Detail:** `docs/deliverable-1..5`
+**Repo:** `github.com/DrKolaman/drone_tracking` · **Code:** `src/` · **Detail:** `docs/deliverable-1..5`
+**Demo videos:** tracker → <https://youtu.be/rEoeuRza6Y4> · scene-map build → <https://youtu.be/1hKg0ZwIBbQ>
 
 **Problem.** Track one person in `data/source.mp4` — 360×640, 30 fps, ~40 s of **top-down aerial thermal** footage. The target is a **few-pixel (~20–35 px), low-contrast** blob, frequently occluded, hard to separate from background. The camera moves and the clip has hard **discontinuities**: a motion-blur burst (610–614), a **~3× FOV switch** (647), a **jump** to another area with a *different* object (745–956), a **jump-back + B/W→red thermal colour switch** (957), back to B/W (1030), target leaves (1052) and reappears elsewhere (1170). **No ground-truth labels exist.** The system must combine *spatial* (per-frame detection) and *temporal* (identity over time) reasoning.
 
@@ -111,7 +112,8 @@ Two root causes explain almost everything: **(RC-A)** the target's signal is ind
 
 ## Results & Demo
 
-- **Demo video:** full-clip annotated run (`output/track_full_clip.mp4`, 1200 frames, all discontinuities) — *(attach hosted link)*; clean-segment highlight `output/track_dino_reid.mp4` (0–646).
+- **Demo video — tracker:** <https://youtu.be/rEoeuRza6Y4> (full-clip annotated run, `output/track_full_clip.mp4`, 1200 frames, all discontinuities; clean-segment highlight `output/track_dino_reid.mp4`, 0–646).
+- **Demo video — scene-map build:** <https://youtu.be/1hKg0ZwIBbQ> (progressive stabilized mosaic with the 647-zoom link).
 - **Run:** `HF_TOKEN=… python3 src/track_full_clip.py --output output/track_full_clip.mp4` (see `README.md`).
 - **Tests:** `pytest -m "not slow"` (fast) and `pytest -m slow` (golden-master) pin current behaviour for safe refactoring.
 - **Honest scope:** the continuous segment is tracked well; robust cross-cut re-identification after a long gap / thermal switch is documented as **not solved** (Failure §4) with the path to solve it (Improvements §5).

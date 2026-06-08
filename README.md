@@ -46,7 +46,8 @@ survey and the (negative) SGLATrack single-object-tracker trial.
 
 ## Results
 
-Demo: run `src/track_full_clip.py` to regenerate `output/track_full_clip.mp4`.
+**Demo videos:** tracker → <https://youtu.be/rEoeuRza6Y4> · scene-map build → <https://youtu.be/1hKg0ZwIBbQ>
+(or run `src/track_full_clip.py` to regenerate `output/track_full_clip.mp4` locally).
 
 | Metric (full clip, 1200 frames) | Value |
 |---|---|
